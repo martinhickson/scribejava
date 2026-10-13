@@ -81,7 +81,7 @@ public class OAuth2AccessTokenJsonExtractor extends AbstractJsonExtractor implem
                 errorUri, response);
     }
 
-    private OAuth2AccessToken createToken(String rawResponse) throws IOException {
+    protected OAuth2AccessToken createToken(String rawResponse) throws IOException {
 
         final JsonNode response = OBJECT_MAPPER.readTree(rawResponse);
 
