@@ -76,6 +76,17 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
+      # Maven 3.10 writes maven-metadata-local.xml next to the version directory.
+      # central-publishing-maven-plugin 0.11.0 leaves that file in the bundle, and
+      # Central rejects it. 3.9.16 does not write the file.
+      - name: Install Maven 3.9.16
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/maven.tgz https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.tar.gz
+          echo 'd739269fc561aefc7d7ee1b508263579  /tmp/maven.tgz' | md5sum -c -
+          tar -xzf /tmp/maven.tgz -C /opt
+          echo /opt/apache-maven-3.9.16/bin >> "${GITHUB_PATH}"
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
