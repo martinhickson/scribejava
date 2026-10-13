@@ -129,11 +129,10 @@ public class ArmeriaHttpClient extends AbstractAsyncOnlyHttpClient {
                 throw new IllegalArgumentException("Contents missing for request method " + httpVerb.name());
             }
 
-            if (headersBuilder.contentType() == null) {
-                headersBuilder.contentType(MediaType.FORM_DATA);
-            }
-
             if (contents != null) {
+                if (headersBuilder.contentType() == null) {
+                    headersBuilder.contentType(MediaType.FORM_DATA);
+                }
                 response = client.execute(headersBuilder.build(), contents);
             } else {
                 response = client.execute(headersBuilder.build());
