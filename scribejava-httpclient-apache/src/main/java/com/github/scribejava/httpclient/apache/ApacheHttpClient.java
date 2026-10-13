@@ -124,7 +124,7 @@ public class ApacheHttpClient extends AbstractAsyncOnlyHttpClient {
         final RequestBuilder builder = getRequestBuilder(httpVerb);
         builder.setUri(completeUrl);
 
-        if (httpVerb.isPermitBody()) {
+        if (entity != null && httpVerb.isPermitBody()) {
             if (!headers.containsKey(CONTENT_TYPE)) {
                 builder.addHeader(CONTENT_TYPE, DEFAULT_CONTENT_TYPE);
             }
