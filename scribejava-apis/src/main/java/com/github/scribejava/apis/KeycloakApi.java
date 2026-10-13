@@ -8,6 +8,10 @@ import com.github.scribejava.core.model.OAuth2AccessToken;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+/**
+ * Keycloak 17 and later, which dropped the {@code /auth} prefix.
+ * Use {@link KeycloakApiV1} for older servers.
+ */
 public class KeycloakApi extends DefaultApi20 {
 
     private static final ConcurrentMap<String, KeycloakApi> INSTANCES = new ConcurrentHashMap<>();
@@ -38,7 +42,7 @@ public class KeycloakApi extends DefaultApi20 {
     }
 
     protected static String composeBaseUrlWithRealm(String baseUrl, String realm) {
-        return baseUrl + (baseUrl.endsWith("/") ? "" : "/") + "auth/realms/" + realm;
+        return baseUrl + (baseUrl.endsWith("/") ? "" : "/") + "realms/" + realm;
     }
 
     @Override

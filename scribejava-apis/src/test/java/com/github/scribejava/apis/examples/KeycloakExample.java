@@ -26,7 +26,8 @@ public class KeycloakExample {
         final String baseUrl = "your_base_url";
         final String realm = "your_realm";
 
-        final String protectedResourceUrl = baseUrl + "/auth/realms/" + realm + "/protocol/openid-connect/userinfo";
+        // Keycloak 17 and later. Use KeycloakApiV1 for servers that still serve /auth/realms.
+        final String protectedResourceUrl = baseUrl + "/realms/" + realm + "/protocol/openid-connect/userinfo";
 
         final OAuth20Service service = new ServiceBuilder(apiKey)
                 .apiSecret(apiSecret)
