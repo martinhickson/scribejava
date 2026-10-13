@@ -42,7 +42,7 @@ public class AccessTokenRequestParams {
             return this;
         }
         if (this.extraParameters == null) {
-            extraParameters = new HashMap<>();
+            this.extraParameters = new HashMap<>();
         }
         this.extraParameters.putAll(extraParameters);
         return this;

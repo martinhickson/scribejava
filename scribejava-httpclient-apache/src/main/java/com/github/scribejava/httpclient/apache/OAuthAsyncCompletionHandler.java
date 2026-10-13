@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.http.Header;
 import org.apache.http.HttpResponse;
@@ -25,6 +26,7 @@ public class OAuthAsyncCompletionHandler<T> implements FutureCallback<HttpRespon
     private final OAuthAsyncRequestCallback<T> callback;
     private final ResponseConverter<T> converter;
     private final CountDownLatch latch;
+    private final AtomicBoolean settled;
     private T result;
     private Exception exception;
 
@@ -32,10 +34,14 @@ public class OAuthAsyncCompletionHandler<T> implements FutureCallback<HttpRespon
         this.callback = callback;
         this.converter = converter;
         this.latch = new CountDownLatch(1);
+        this.settled = new AtomicBoolean();
     }
 
     @Override
     public void completed(HttpResponse httpResponse) {
+        if (!settled.compareAndSet(false, true)) {
+            return;
+        }
         try {
             final Map<String, String> headersMap = new HashMap<>();
             for (Header header : httpResponse.getAllHeaders()) {
@@ -67,6 +73,9 @@ public class OAuthAsyncCompletionHandler<T> implements FutureCallback<HttpRespon
 
     @Override
     public void failed(Exception e) {
+        if (!settled.compareAndSet(false, true)) {
+            return;
+        }
         exception = e;
         try {
             if (callback != null) {
@@ -79,6 +88,9 @@ public class OAuthAsyncCompletionHandler<T> implements FutureCallback<HttpRespon
 
     @Override
     public void cancelled() {
+        if (!settled.compareAndSet(false, true)) {
+            return;
+        }
         exception = new CancellationException();
         try {
             if (callback != null) {

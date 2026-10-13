@@ -17,13 +17,20 @@ import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Future;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 
 public class ApacheHttpClient extends AbstractAsyncOnlyHttpClient {
 
     private final CloseableHttpAsyncClient client;
+    private final Set<OAuthAsyncCompletionHandler<?>> inFlight
+            = Collections.synchronizedSet(new HashSet<OAuthAsyncCompletionHandler<?>>());
 
     public ApacheHttpClient() {
         this(ApacheHttpClientConfig.defaultConfig());
@@ -40,6 +47,41 @@ public class ApacheHttpClient extends AbstractAsyncOnlyHttpClient {
     public ApacheHttpClient(CloseableHttpAsyncClient client) {
         this.client = client;
         this.client.start();
+        // httpasyncclient 4.1 leaves exchanges in requestQueue when the I/O reactor
+        // thread dies (issue 1065). Nothing completes their callbacks, so Future.get()
+        // waits until the process is restarted. Fail those exchanges when the client
+        // stops running. A stopped client cannot be started again.
+        watchReactor();
+    }
+
+    private void watchReactor() {
+        final Thread watcher = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    while (client.isRunning()) {
+                        Thread.sleep(50L);
+                    }
+                } catch (final InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                failInFlight(new IOException("I/O reactor terminated"));
+            }
+        }, "scribejava-apache-reactor-watch");
+        watcher.setDaemon(true);
+        watcher.start();
+    }
+
+    private void failInFlight(final IOException cause) {
+        final List<OAuthAsyncCompletionHandler<?>> pending;
+        synchronized (inFlight) {
+            pending = new ArrayList<OAuthAsyncCompletionHandler<?>>(inFlight);
+            inFlight.clear();
+        }
+        for (OAuthAsyncCompletionHandler<?> handler : pending) {
+            handler.failed(cause);
+        }
     }
 
     @Override
@@ -96,9 +138,34 @@ public class ApacheHttpClient extends AbstractAsyncOnlyHttpClient {
         if (userAgent != null) {
             builder.setHeader(OAuthConstants.USER_AGENT_HEADER_NAME, userAgent);
         }
-        final OAuthAsyncCompletionHandler<T> handler = new OAuthAsyncCompletionHandler<>(callback, converter);
-        final Future<HttpResponse> future = client.execute(builder.build(), handler);
-        return new ApacheHttpFuture<>(future, handler);
+        final OAuthAsyncCompletionHandler<T> handler = new OAuthAsyncCompletionHandler<T>(callback, converter) {
+            @Override
+            public void completed(final HttpResponse httpResponse) {
+                inFlight.remove(this);
+                super.completed(httpResponse);
+            }
+
+            @Override
+            public void failed(final Exception ex) {
+                inFlight.remove(this);
+                super.failed(ex);
+            }
+
+            @Override
+            public void cancelled() {
+                inFlight.remove(this);
+                super.cancelled();
+            }
+        };
+        inFlight.add(handler);
+        try {
+            final Future<HttpResponse> future = client.execute(builder.build(), handler);
+            return new ApacheHttpFuture<T>(future, handler);
+        } catch (final RuntimeException ex) {
+            inFlight.remove(handler);
+            handler.failed(ex);
+            throw ex;
+        }
     }
 
     private static RequestBuilder getRequestBuilder(Verb httpVerb) {
