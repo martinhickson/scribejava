@@ -30,12 +30,11 @@ public class OAuth2AccessTokenJsonExtractor extends AbstractJsonExtractor implem
 
     @Override
     public OAuth2AccessToken extract(Response response) throws IOException {
-        final String body = response.getBody();
-        Preconditions.checkEmptyString(body, "Response body is incorrect. Can't extract a token from an empty string");
-
         if (response.getCode() != 200) {
             generateError(response);
         }
+        final String body = response.getBody();
+        Preconditions.checkEmptyString(body, "Response body is incorrect. Can't extract a token from an empty string");
         return createToken(body);
     }
 
@@ -48,6 +47,10 @@ public class OAuth2AccessTokenJsonExtractor extends AbstractJsonExtractor implem
      */
     public void generateError(Response response) throws IOException {
         final String responseBody = response.getBody();
+        // A 401 often has no body. readTree(null) throws IllegalArgumentException, which hides the HTTP error.
+        if (!Preconditions.hasText(responseBody)) {
+            throw new OAuth2AccessTokenErrorResponse(null, null, null, response);
+        }
         final JsonNode responseBodyJson;
         try {
             responseBodyJson = OBJECT_MAPPER.readTree(responseBody);

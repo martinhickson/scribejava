@@ -87,6 +87,28 @@ public class OAuth2AccessTokenJsonExtractorTest {
     }
 
     @Test
+    public void shouldThrowOAuthErrorWhenUnauthorizedBodyIsEmpty() throws IOException {
+        assertEmptyErrorResponse(null);
+        assertEmptyErrorResponse("");
+        assertEmptyErrorResponse("   ");
+    }
+
+    private void assertEmptyErrorResponse(final String body) throws IOException {
+        try (Response response = new Response(401, null, Collections.<String, String>emptyMap(), body)) {
+            final OAuth2AccessTokenErrorResponse error = assertThrows(OAuth2AccessTokenErrorResponse.class,
+                    new ThrowingRunnable() {
+                @Override
+                public void run() throws Throwable {
+                    extractor.extract(response);
+                }
+            });
+            assertEquals(null, error.getError());
+            assertEquals(null, error.getErrorDescription());
+            assertEquals(null, error.getErrorUri());
+        }
+    }
+
+    @Test
     public void shouldThrowExceptionIfResponseIsError() throws IOException {
         final String responseBody = "{"
                 + "\"error_description\":\"unknown, invalid, or expired refresh token\","
