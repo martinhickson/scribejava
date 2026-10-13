@@ -1,0 +1,328 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (for example 8.3.4)'
+        required: true
+        type: string
+      base_branch:
+        description: 'Branch to cut the release from'
+        required: false
+        default: 'maintenance'
+        type: string
+      release_branch:
+        description: 'Release branch. Empty derives release/<version>'
+        required: false
+        default: ''
+        type: string
+      release_tag:
+        description: 'Git tag. Empty derives v<version>'
+        required: false
+        default: ''
+        type: string
+      create_release:
+        description: 'Create GitHub Release'
+        required: false
+        default: true
+        type: boolean
+      publish_packages:
+        description: 'Publish to GitHub Packages (groupId stays com.github.scribejava)'
+        required: false
+        default: true
+        type: boolean
+      run_tests:
+        description: 'Run tests before publishing'
+        required: false
+        default: false
+        type: boolean
+      deploy_to_maven_central:
+        description: 'Publish to Maven Central (io.github.martinhickson)'
+        required: false
+        default: true
+        type: boolean
+      central_group_id:
+        description: 'Maven groupId for Maven Central (verified namespace)'
+        required: false
+        default: 'io.github.martinhickson'
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # java.release is 7. JDK 20+ removed --release 7; Temurin 17 still accepts it.
+      JAVA_VERSION: '17'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve release names
+        id: names
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          BASE="${{ inputs.base_branch }}"
+          BRANCH="${{ inputs.release_branch }}"
+          TAG="${{ inputs.release_tag }}"
+          GROUP="${{ inputs.central_group_id }}"
+          if ! [[ "${VERSION}" =~ ^[0-9]+(\.[0-9A-Za-z-]+)*$ ]]; then
+            echo "::error::Version must look like 8.3.4"
+            exit 1
+          fi
+          if ! [[ "${BASE}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Base branch name is not valid"
+            exit 1
+          fi
+          if [ -z "${BRANCH}" ]; then
+            BRANCH="release/${VERSION}"
+          fi
+          if [ -z "${TAG}" ]; then
+            TAG="v${VERSION}"
+          fi
+          if ! [[ "${BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Release branch name is not valid"
+            exit 1
+          fi
+          if ! [[ "${TAG}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Release tag is not valid"
+            exit 1
+          fi
+          if ! [[ "${GROUP}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Maven Central groupId is not valid"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "base=${BASE}" >> "${GITHUB_OUTPUT}"
+          echo "branch=${BRANCH}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "group=${GROUP}" >> "${GITHUB_OUTPUT}"
+
+      - name: Ensure release branch and tag do not already exist
+        run: |
+          set -euo pipefail
+          git fetch origin
+          if git ls-remote --heads origin "${{ steps.names.outputs.branch }}" | grep -q .; then
+            echo "::error::Release branch already exists: ${{ steps.names.outputs.branch }}"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/${{ steps.names.outputs.tag }}" | grep -q .; then
+            echo "::error::Release tag already exists: ${{ steps.names.outputs.tag }}"
+            exit 1
+          fi
+
+      - name: Cut release branch
+        run: |
+          set -euo pipefail
+          git checkout "${{ steps.names.outputs.base }}"
+          git pull origin "${{ steps.names.outputs.base }}"
+          git switch -c "${{ steps.names.outputs.branch }}"
+
+      - name: Set Maven version
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.names.outputs.version }}"
+          mvn -B -ntp versions:set \
+            -DnewVersion="${VERSION}" \
+            -DprocessAllModules=true \
+            -DgenerateBackupPoms=false
+          python3 - << PY
+          import pathlib, re, sys
+          version = "${VERSION}"
+          pom = pathlib.Path("pom.xml")
+          text = pom.read_text()
+          updated = re.sub(
+              r"(<artifactId>oss-parent</artifactId>\s*<version>)[^<]+(</version>)",
+              r"\g<1>9\g<2>",
+              text,
+              count=1,
+          )
+          if "<tag>" in updated:
+              updated = re.sub(r"<tag>[^<]*</tag>", f"<tag>{version}</tag>", updated, count=1)
+          else:
+              updated = updated.replace("</scm>", f"  <tag>{version}</tag>\n    </scm>", 1)
+          if updated != text:
+              pom.write_text(updated)
+          if not re.search(r"<artifactId>oss-parent</artifactId>\s*<version>9</version>", pom.read_text()):
+              sys.exit("oss-parent version is no longer 9")
+          print("oss-parent stays at 9; scm tag set to", version)
+          PY
+
+      - name: Commit release version
+        run: |
+          set -euo pipefail
+          git add -u
+          if git diff --cached --quiet; then
+            echo "No version changes to commit"
+          else
+            git commit -m "Release ${{ steps.names.outputs.version }}"
+          fi
+
+      - name: Run tests
+        if: inputs.run_tests
+        run: mvn -B -ntp verify
+
+      - name: Configure Maven for GitHub Packages
+        if: inputs.publish_packages
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${{ github.repository_owner }}</username>
+                <password>${{ secrets.GITHUB_TOKEN }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Publish to GitHub Packages
+        if: inputs.publish_packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          mvn -B -ntp deploy -Dmaven.test.skip=true -Dgpg.skip=true \
+            -DaltDeploymentRepository="github::default::https://maven.pkg.github.com/${{ github.repository }}" \
+            | tee /tmp/gh-deploy.log
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "${code}" -ne 0 ]; then
+            if grep -q 'status code: 409' /tmp/gh-deploy.log; then
+              echo "Already on GitHub Packages"
+            else
+              exit "${code}"
+            fi
+          fi
+
+      - name: Publish to Maven Central
+        if: inputs.deploy_to_maven_central
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_CENTRAL_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_CENTRAL_GPG_PRIVATE_KEY }}
+          MAVEN_CENTRAL_GPG_PASSPHRASE: ${{ secrets.MAVEN_CENTRAL_GPG_PASSPHRASE }}
+          CENTRAL_GROUP_ID: ${{ steps.names.outputs.group }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MAVEN_CENTRAL_USERNAME}" ] || [ -z "${MAVEN_CENTRAL_PASSWORD}" ] || [ -z "${MAVEN_CENTRAL_GPG_PRIVATE_KEY}" ]; then
+            echo "::error::Maven Central publishing is not configured. Set MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, and MAVEN_CENTRAL_GPG_PRIVATE_KEY."
+            exit 1
+          fi
+          python3 - << 'PY'
+          import pathlib, shutil
+          backup = pathlib.Path("/tmp/pom-backup")
+          if backup.exists():
+              shutil.rmtree(backup)
+          for pom in pathlib.Path(".").rglob("pom.xml"):
+              if ".git" in pom.parts or "target" in pom.parts:
+                  continue
+              dest = backup / pom
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(pom, dest)
+          print("backed up poms")
+          PY
+          restore_poms() {
+            status=$?
+            python3 - << 'PY'
+          import pathlib, shutil
+          backup = pathlib.Path("/tmp/pom-backup")
+          for src in backup.rglob("pom.xml"):
+              shutil.copy2(src, src.relative_to(backup))
+          print("restored poms")
+          PY
+            exit "${status}"
+          }
+          trap restore_poms EXIT
+          chmod +x .github/scripts/rewrite-group-id.sh
+          .github/scripts/rewrite-group-id.sh com.github.scribejava "${CENTRAL_GROUP_ID}"
+          find . -name pom.xml \
+            -not -path './.git/*' \
+            -not -path '*/target/*' \
+            -print0 |
+            xargs -0 sed -i 's|github.com/scribejava/scribejava|github.com/martinhickson/scribejava|g'
+          mkdir -p ~/.m2
+          if [ ! -f ~/.m2/settings.xml ]; then
+            printf '%s\n' '<settings><servers></servers></settings>' > ~/.m2/settings.xml
+          fi
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+          from xml.sax.saxutils import escape
+          settings = Path.home() / ".m2" / "settings.xml"
+          text = settings.read_text()
+          if "<id>central</id>" not in text:
+              server = (
+                  "\n            <server>\n"
+                  "              <id>central</id>\n"
+                  f"              <username>{escape(os.environ['MAVEN_CENTRAL_USERNAME'])}</username>\n"
+                  f"              <password>{escape(os.environ['MAVEN_CENTRAL_PASSWORD'])}</password>\n"
+                  "            </server>"
+              )
+              text = text.replace("</servers>", server + "\n            </servers>", 1)
+              settings.write_text(text)
+          print("central server configured")
+          PY
+          echo "${MAVEN_CENTRAL_GPG_PRIVATE_KEY}" | gpg --batch --import --pinentry-mode loopback
+          mvn -B -ntp deploy -Pcentral-release -Dmaven.test.skip=true \
+            -Dgpg.passphrase="${MAVEN_CENTRAL_GPG_PASSPHRASE}"
+
+      - name: Push release branch and tag
+        run: |
+          set -euo pipefail
+          git push -u origin "HEAD:${{ steps.names.outputs.branch }}"
+          git tag -a "${{ steps.names.outputs.tag }}" -m "Release ${{ steps.names.outputs.version }}"
+          git push origin "${{ steps.names.outputs.tag }}"
+
+      - name: Create GitHub Release
+        if: inputs.create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.names.outputs.tag }}
+          target_commitish: ${{ steps.names.outputs.branch }}
+          name: ${{ steps.names.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            Release ${{ steps.names.outputs.version }}
+
+            GitHub Packages keeps groupId `com.github.scribejava`.
+            Maven Central uses `${{ steps.names.outputs.group }}` when that publish step is enabled.
+
+            ```xml
+            <dependency>
+              <groupId>${{ steps.names.outputs.group }}</groupId>
+              <artifactId>scribejava-core</artifactId>
+              <version>${{ steps.names.outputs.version }}</version>
+            </dependency>
+            ```
+          files: |
+            **/target/*.jar
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
