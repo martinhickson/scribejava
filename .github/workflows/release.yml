@@ -208,7 +208,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          mvn -B -ntp deploy -Dmaven.test.skip=true -Dgpg.skip=true \
+          mvn -B -ntp deploy -DskipTests -Dgpg.skip=true \
             -DaltDeploymentRepository="github::default::https://maven.pkg.github.com/${{ github.repository }}" \
             | tee /tmp/gh-deploy.log
           code=${PIPESTATUS[0]}
@@ -290,7 +290,7 @@ jobs:
           print("central server configured")
           PY
           echo "${MAVEN_CENTRAL_GPG_PRIVATE_KEY}" | gpg --batch --import --pinentry-mode loopback
-          mvn -B -ntp deploy -Pcentral-release -Dmaven.test.skip=true \
+          mvn -B -ntp deploy -Pcentral-release -DskipTests \
             -Dgpg.passphrase="${MAVEN_CENTRAL_GPG_PASSPHRASE}"
 
       - name: Push release branch and tag
